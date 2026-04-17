@@ -11,7 +11,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import tensorflow as tf
 from tensorflow import keras
-from tensorflow.keras import layers
+from tensorflow.keras import layers, mixed_precision
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.callbacks import ModelCheckpoint, ReduceLROnPlateau
 from sklearn import preprocessing
@@ -91,7 +91,8 @@ def get_Model(i):
     else:
         model.add(keras.layers.Dense(64))
 
-    model.add(keras.layers.Dense(1, activation=keras.layers.LeakyReLU(alpha=v_alpha)))
+    # 混合精度训练时，输出层显式使用 float32，避免回归任务数值不稳定
+    model.add(keras.layers.Dense(1, activation=keras.layers.LeakyReLU(alpha=v_alpha), dtype='float32'))
     return model
 
 def get_spllit_index_v2(s_list_file, i):
@@ -300,6 +301,9 @@ if __name__ == "__main__":
             # 如果已初始化则退回 memory_growth
             tf.config.experimental.set_memory_growth(device, True)
 
+    # 启用混合精度，显存占用约减半，A800 支持 Tensor Core 加速
+    mixed_precision.set_global_policy('mixed_float16')
+
     # Constants
     N_pixels = 224
     cwt_root = r"/ai/xzx/PPG-more/ppg_dalia_cwt/picture/ppg_dalia"
@@ -357,8 +361,10 @@ if __name__ == "__main__":
         print("Creating model...")
         model_flag = 2  # DenseNet
         model = get_Model(model_flag)
+        # 混合精度下新版 experimental Adam 与 AutoCastVariable 有兼容性 bug，
+        # 使用 legacy Adam 避免 "could not be represented through tracing type" 错误
         model.compile(
-            optimizer=keras.optimizers.Adam(learning_rate=lr),
+            optimizer=keras.optimizers.legacy.Adam(learning_rate=lr),
             loss=tf.keras.losses.Huber(delta=2.0),
             metrics=['mse', 'mae']
         )
