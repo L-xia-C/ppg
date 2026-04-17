@@ -130,9 +130,12 @@ def preprocess_all_images(file_list, cwt_root, cache_path):
         img = Image.open(os.path.join(cwt_root, fname)).convert('RGB').resize((224, 224))
         images[idx] = np.array(img, dtype='float32') / 255.0
 
-    from concurrent.futures import ThreadPoolExecutor
+    from concurrent.futures import ThreadPoolExecutor, as_completed
     with ThreadPoolExecutor(max_workers=os.cpu_count()) as executor:
-        list(tqdm(executor.map(_process_one, enumerate(file_list)), total=n))
+        futures = [executor.submit(_process_one, (idx, fname))
+                   for idx, fname in enumerate(file_list)]
+        for _ in tqdm(as_completed(futures), total=n):
+            pass
 
     images.flush()
     # 以只读模式重新打开，避免意外修改
