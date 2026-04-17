@@ -1,10 +1,17 @@
 import re, gc, os, math, time, argparse
+# 在 import tensorflow 之前设置显存分配相关环境变量
+# cuda_malloc_async 分配器更精细，适合 vGPU 虚拟化环境，避免一次性 reserve 大块显存
+os.environ.setdefault("TF_GPU_ALLOCATOR", "cuda_malloc_async")
+os.environ.setdefault("TF_FORCE_GPU_ALLOW_GROWTH", "true")
+# 禁用 XLA 预编译缓存，减少启动时的显存预占用
+os.environ.setdefault("TF_XLA_FLAGS", "--tf_xla_enable_xla_devices=false")
+
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import tensorflow as tf
 from tensorflow import keras
-from tensorflow.keras import layers
+from tensorflow.keras import layers, mixed_precision
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.callbacks import ModelCheckpoint, ReduceLROnPlateau
 from sklearn import preprocessing
@@ -84,7 +91,8 @@ def get_Model(i):
     else:
         model.add(keras.layers.Dense(64))
 
-    model.add(keras.layers.Dense(1, activation=keras.layers.LeakyReLU(alpha=v_alpha)))
+    # 混合精度训练时，输出层显式使用 float32，避免回归任务数值不稳定
+    model.add(keras.layers.Dense(1, activation=keras.layers.LeakyReLU(alpha=v_alpha), dtype='float32'))
     return model
 
 def get_spllit_index_v2(s_list_file, i):
@@ -257,7 +265,7 @@ def get_args():
     parser.add_argument('-e', '--epochs', type=int, default=200)
     parser.add_argument('-l', '--lr', type=float, default=0.0025)
     parser.add_argument('-c', '--choose', type=str, default="0")
-    parser.add_argument('-b', '--batch_size', type=int, default=128)
+    parser.add_argument('-b', '--batch_size', type=int, default=16)
     parser.add_argument('-ss', '--subject_start', type=int, default=1)
     parser.add_argument('-se', '--subject_end', type=int, default=8)
     parser.add_argument('-o','--output_dir', type=str)
@@ -274,13 +282,27 @@ if __name__ == "__main__":
     end = args.subject_end
     output_index_best_test_folder=args.output_dir
 
-    # Set GPU
+    # 注意：CUDA_VISIBLE_DEVICES 在 import tensorflow 之后设置已不生效，
+    # 如需选择 GPU 请在命令行启动前通过环境变量传入：
+    #   CUDA_VISIBLE_DEVICES=0 python optimized-densenet-FromCS.py
+    # 这里保留仅作记录，对已初始化的 TF 无影响
     os.environ["CUDA_VISIBLE_DEVICES"] = choose_gpu
 
-    # Enable memory growth to avoid allocating all memory at once
+    # 显式限制 TF 每块 GPU 最多使用 16GB 显存，避免 vGPU 把 TF 的
+    # 地址空间保留统计为超限（服务器 vGPU 配额为 19.5GB）
     physical_devices = tf.config.list_physical_devices('GPU')
     for device in physical_devices:
-        tf.config.experimental.set_memory_growth(device, True)
+        try:
+            tf.config.set_logical_device_configuration(
+                device,
+                [tf.config.LogicalDeviceConfiguration(memory_limit=16384)]
+            )
+        except RuntimeError:
+            # 如果已初始化则退回 memory_growth
+            tf.config.experimental.set_memory_growth(device, True)
+
+    # 启用混合精度，显存占用约减半，A800 支持 Tensor Core 加速
+    mixed_precision.set_global_policy('mixed_float16')
 
     # Constants
     N_pixels = 224
