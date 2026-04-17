@@ -120,12 +120,20 @@ def preprocess_all_images(file_list, cwt_root, cache_path):
         print(f"加载已有图像缓存: {cache_path}")
         return np.memmap(cache_path, dtype='float32', mode='r', shape=shape)
 
-    # 首次运行：逐张预处理并写入memmap
+    # 首次运行：多线程并行预处理并写入memmap
+    # PIL的JPEG解码底层用C库实现会释放GIL，各idx写入memmap不同位置无竞争
     print(f"首次运行，预处理 {n} 张图片并缓存到磁盘...")
     images = np.memmap(cache_path, dtype='float32', mode='w+', shape=shape)
-    for idx, fname in enumerate(tqdm(file_list)):
+
+    def _process_one(args):
+        idx, fname = args
         img = Image.open(os.path.join(cwt_root, fname)).convert('RGB').resize((224, 224))
         images[idx] = np.array(img, dtype='float32') / 255.0
+
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=os.cpu_count()) as executor:
+        list(tqdm(executor.map(_process_one, enumerate(file_list)), total=n))
+
     images.flush()
     # 以只读模式重新打开，避免意外修改
     return np.memmap(cache_path, dtype='float32', mode='r', shape=shape)
