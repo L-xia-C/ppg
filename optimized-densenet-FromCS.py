@@ -101,40 +101,59 @@ def extract_hr_from_filename(filename):
         return float(match.group(1))
     return None
 
-def create_data_generators(file_list, hr_values, train_indices, test_indices, batch_size=16):
-    """Create data generators for training and testing"""
-    def preprocess_image(filename):
-        """Preprocess a single image file"""
-        img = tf.io.read_file(filename)
-        img = tf.image.decode_jpeg(img, channels=3)
-        img = tf.image.resize(img, [224, 224])
-        img = img / 255.0  # Normalize to [0,1]
-        return img
+def preprocess_all_images(file_list, cwt_root, cache_path):
+    """预处理所有图片，保存为numpy memmap文件。只在首次运行时执行，后续直接加载。
 
-    # Create lists for training
-    train_files = [os.path.join(cwt_root, file_list[i]) for i in train_indices]
-    train_labels = [hr_values[i] for i in train_indices]
+    memmap将数据存储在磁盘上，按需加载到内存，不会一次性占用34GB内存。
+    读取memmap是直接的二进制数据访问，跳过了JPEG解码，速度远快于原始方式。
 
-    # Create lists for testing
-    test_files = [os.path.join(cwt_root, file_list[i]) for i in test_indices]
-    test_labels = [hr_values[i] for i in test_indices]
+    Args:
+        cache_path: memmap文件路径
+    Returns:
+        numpy memmap, shape=(n, 224, 224, 3), dtype=float32
+    """
+    n = len(file_list)
+    shape = (n, 224, 224, 3)
 
-    # Create training dataset
-    train_dataset = tf.data.Dataset.from_tensor_slices((train_files, train_labels))
-    train_dataset = train_dataset.shuffle(buffer_size=1000)
-    num_parallel_calls = 8
-    train_dataset = train_dataset.map(
-        lambda x, y: (preprocess_image(x), y),
-        num_parallel_calls=tf.data.AUTOTUNE
+    # 如果缓存已存在，直接加载
+    if os.path.exists(cache_path):
+        print(f"加载已有图像缓存: {cache_path}")
+        return np.memmap(cache_path, dtype='float32', mode='r', shape=shape)
+
+    # 首次运行：逐张预处理并写入memmap
+    print(f"首次运行，预处理 {n} 张图片并缓存到磁盘...")
+    images = np.memmap(cache_path, dtype='float32', mode='w+', shape=shape)
+    for idx, fname in enumerate(tqdm(file_list)):
+        img = Image.open(os.path.join(cwt_root, fname)).convert('RGB').resize((224, 224))
+        images[idx] = np.array(img, dtype='float32') / 255.0
+    images.flush()
+    # 以只读模式重新打开，避免意外修改
+    return np.memmap(cache_path, dtype='float32', mode='r', shape=shape)
+
+def create_data_generators(images_memmap, hr_values, train_indices, test_indices, batch_size=16):
+    """从memmap中按索引切分训练集和测试集。
+
+    使用from_generator按需从memmap读取，OS会自动管理页面缓存，
+    无需将全部数据加载到内存。
+    """
+    def make_generator(indices):
+        def gen():
+            for i in indices:
+                yield images_memmap[i], hr_values[i]
+        return gen
+
+    output_signature = (
+        tf.TensorSpec(shape=(224, 224, 3), dtype=tf.float32),
+        tf.TensorSpec(shape=(), dtype=tf.float64),
     )
+
+    train_dataset = tf.data.Dataset.from_generator(
+        make_generator(train_indices), output_signature=output_signature)
+    train_dataset = train_dataset.shuffle(buffer_size=1000)
     train_dataset = train_dataset.batch(batch_size).prefetch(tf.data.AUTOTUNE)
 
-    # Create testing dataset
-    test_dataset = tf.data.Dataset.from_tensor_slices((test_files, test_labels))
-    test_dataset = test_dataset.map(
-        lambda x, y: (preprocess_image(x), y),
-        num_parallel_calls=tf.data.AUTOTUNE
-    )
+    test_dataset = tf.data.Dataset.from_generator(
+        make_generator(test_indices), output_signature=output_signature)
     test_dataset = test_dataset.batch(batch_size).prefetch(tf.data.AUTOTUNE)
 
     return train_dataset, test_dataset
@@ -313,6 +332,10 @@ if __name__ == "__main__":
     scaler_yy = preprocessing.MinMaxScaler(feature_range=(-1, 1)).fit(ecg.reshape(-1, 1))
     yy = scaler_yy.transform(ecg.reshape(-1, 1)).squeeze()
 
+    # 预处理所有图片并缓存到磁盘（只在首次运行时执行，后续直接加载）
+    image_cache_path = os.path.join(output_index_best_test_folder, "images_cache.dat")
+    images_memmap = preprocess_all_images(s_list_file, cwt_root, image_cache_path)
+
     # Lists to store results
     list_mae_v = []
     list_rmse_v = []
@@ -332,11 +355,11 @@ if __name__ == "__main__":
         print(f"Split data: {len(train_index)} training samples, {len(test_index)} test samples")
         print(f"Split time: {(time.time() - begin_time):.2f} seconds")
 
-        # Create data generators
+        # 从memmap缓存中按索引切分训练集和测试集（无需重复解码图片）
         print("Creating data generators...")
         begin_time = time.time()
         train_dataset, test_dataset = create_data_generators(
-            s_list_file, yy, train_index, test_index, batch_size)
+            images_memmap, yy, train_index, test_index, batch_size)
         print(f"Data generator creation time: {(time.time() - begin_time):.2f} seconds")
 
         # Create model
@@ -410,7 +433,7 @@ if __name__ == "__main__":
         pd_list.append(df_fold)
 
         # Clear memory
-        del model
+        del model, train_dataset, test_dataset
         tf.keras.backend.clear_session()
         gc.collect()
 
