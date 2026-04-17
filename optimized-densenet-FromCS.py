@@ -281,10 +281,10 @@ def evaluate_model(model, train_dataset, test_dataset, train_indices, test_indic
 def get_args():
     """Parse command line arguments"""
     parser = argparse.ArgumentParser()
-    parser.add_argument('-e', '--epochs', type=int, default=3)
+    parser.add_argument('-e', '--epochs', type=int, default=200)
     parser.add_argument('-l', '--lr', type=float, default=0.0025)
     parser.add_argument('-c', '--choose', type=str, default="0")
-    parser.add_argument('-b', '--batch_size', type=int, default=16)
+    parser.add_argument('-b', '--batch_size', type=int, default=128)
     parser.add_argument('-ss', '--subject_start', type=int, default=1)
     parser.add_argument('-se', '--subject_end', type=int, default=8)
     parser.add_argument('-o','--output_dir', type=str)
@@ -311,14 +311,14 @@ if __name__ == "__main__":
 
     # Constants
     N_pixels = 224
-    cwt_root = r"D:\XZX\PPG-more\self_cwt\picture\self_highlight"
+    cwt_root = r"/ai/xzx/PPG-more/ppg_dalia_cwt/picture/ppg_dalia"
     CNN = ['densenet', 'vgg16_model2']
     flag_CNN = CNN[0]
 
     # Create output directory
     current_time = datetime.now()
     formatted_time = current_time.strftime("%Y%m%d%H%M")
-    # output_index_best_test_folder = rf"/ai/xzx/PPG-more/ppg_dalia_cwt/checkpoints_{formatted_time}_epochs{epochs}_lr{lr}"
+    output_index_best_test_folder = rf"/ai/xzx/ppg/ppg_dalia_cwt_woHL/checkpoints_{formatted_time}_epochs{epochs}_lr{lr}"
     os.makedirs(output_index_best_test_folder, exist_ok=True)
 
     # Get file list - only read filenames and labels, not images
@@ -333,7 +333,7 @@ if __name__ == "__main__":
     yy = scaler_yy.transform(ecg.reshape(-1, 1)).squeeze()
 
     # 预处理所有图片并缓存到磁盘（只在首次运行时执行，后续直接加载）
-    image_cache_path = os.path.join(output_index_best_test_folder, "images_cache.dat")
+    image_cache_path = os.path.join("/ai/xzx/ppg", "images_cache.dat")
     images_memmap = preprocess_all_images(s_list_file, cwt_root, image_cache_path)
 
     # Lists to store results
