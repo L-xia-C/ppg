@@ -101,45 +101,7 @@ def extract_hr_from_filename(filename):
         return float(match.group(1))
     return None
 
-def preprocess_all_images(file_list, cwt_root, cache_path):
-    """预处理所有图片，保存为numpy memmap文件。只在首次运行时执行，后续直接加载。
-
-    memmap将数据存储在磁盘上，按需加载到内存，不会一次性占用34GB内存。
-    读取memmap是直接的二进制数据访问，跳过了JPEG解码，速度远快于原始方式。
-
-    Args:
-        cache_path: memmap文件路径
-    Returns:
-        numpy memmap, shape=(n, 224, 224, 3), dtype=float32
-    """
-    n = len(file_list)
-    shape = (n, 224, 224, 3)
-
-    # 如果缓存已存在，直接加载
-    if os.path.exists(cache_path):
-        print(f"加载已有图像缓存: {cache_path}")
-        return np.memmap(cache_path, dtype='float32', mode='r', shape=shape)
-
-    # 首次运行：多线程并行预处理并写入memmap
-    # PIL的JPEG解码底层用C库实现会释放GIL，各idx写入memmap不同位置无竞争
-    print(f"首次运行，预处理 {n} 张图片并缓存到磁盘...")
-    images = np.memmap(cache_path, dtype='float32', mode='w+', shape=shape)
-
-    def _process_one(args):
-        idx, fname = args
-        img = Image.open(os.path.join(cwt_root, fname)).convert('RGB').resize((224, 224))
-        images[idx] = np.array(img, dtype='float32') / 255.0
-
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-    with ThreadPoolExecutor(max_workers=os.cpu_count()) as executor:
-        futures = [executor.submit(_process_one, (idx, fname))
-                   for idx, fname in enumerate(file_list)]
-        for _ in tqdm(as_completed(futures), total=n):
-            pass
-
-    images.flush()
-    # 以只读模式重新打开，避免意外修改
-    return np.memmap(cache_path, dtype='float32', mode='r', shape=shape)
+from preprocess_images import preprocess_all_images
 
 def create_data_generators(images_memmap, hr_values, train_indices, test_indices, batch_size=16):
     """从memmap中按索引切分训练集和测试集。
